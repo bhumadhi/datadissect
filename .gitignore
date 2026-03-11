@@ -1,0 +1,47 @@
+cat > .gitignore << 'EOF'
+# Data files - never commit actual data
+data/raw/*
+data/cleansed/*
+data/transformed/*
+data/curated/*
+data/quarantine/*
+data/reference/*
+
+# Keep folder structure
+!data/raw/.gitkeep
+!data/cleansed/.gitkeep
+!data/transformed/.gitkeep
+!data/curated/.gitkeep
+!data/quarantine/.gitkeep
+!data/reference/.gitkeep
+
+# Python virtual environments
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Scala / Java
+target/
+*.class
+*.jar
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Docker
+*.log
+
+# Mac
+.DS_Store
+
+# Secrets & configs with passwords
+config/*.env
+infra/**/*.env
+EOF
