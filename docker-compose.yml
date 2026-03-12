@@ -55,7 +55,9 @@ services:
       - healthcare-net
 
   airflow-init:
-    image: apache/airflow:2.9.1
+    build:
+      context: ./infra/airflow
+      dockerfile: Dockerfile
     container_name: airflow-init
     depends_on:
       postgres:
@@ -72,7 +74,9 @@ services:
       - healthcare-net
 
   airflow-webserver:
-    image: apache/airflow:2.9.1
+    build:
+      context: ./infra/airflow
+      dockerfile: Dockerfile
     container_name: airflow-webserver
     depends_on:
       postgres:
@@ -92,7 +96,9 @@ services:
       - healthcare-net
 
   airflow-scheduler:
-    image: apache/airflow:2.9.1
+    build:
+      context: ./infra/airflow
+      dockerfile: Dockerfile
     container_name: airflow-scheduler
     depends_on:
       postgres:
