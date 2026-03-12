@@ -237,3 +237,14 @@ brew install <tool>                # install CLI tool
 ⬜ Add Kafka (ingestion layer)
 ⬜ Add fraud detection (Spark MLlib)
 ```
+
+## 📝 Future Enhancements
+- [ ] Dynamic file routing based on date in filename (e.g. claims_20260312.csv)
+- [ ] INPUT_PATH and OUTPUT_PATH derived from filename date
+- [ ] file_registry table already supports this via file_name and object_key columns
+- [ ] Filename convention: {CLIENT_CODE}_{FILE_TYPE}_{DATE}.csv
+      e.g. BCBS001_837P_20260312.csv
+- [ ] Parse filename to extract: client_code, file_type, date
+- [ ] client_code → lookup source_system table → get source_id
+- [ ] file_type → route to correct Spark processing logic
+- [ ] date → route to correct MinIO partition
