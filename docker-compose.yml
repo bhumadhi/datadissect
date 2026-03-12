@@ -38,6 +38,20 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+  spark:
+    image: apache/spark:3.5.1
+    container_name: spark
+    entrypoint: /opt/spark/bin/spark-class
+    command: org.apache.spark.deploy.master.Master
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+      - "4040:4040"
+    volumes:
+      - ./processing:/opt/spark/jobs
+      - ./data:/opt/spark/data
+    networks:
+      - healthcare-net
 
 networks:
   healthcare-net:
