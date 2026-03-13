@@ -13,6 +13,7 @@ ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64
 USER airflow
 
 RUN pip install --no-cache-dir \
+    pyspark==3.5.1 \
     minio==7.2.5 \
     psycopg2-binary==2.9.9 \
     apache-airflow-providers-apache-spark==4.7.1

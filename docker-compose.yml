@@ -90,6 +90,7 @@ services:
       - "8082:8080"
     volumes:
       - ./orchestration:/opt/airflow/dags
+      - ./processing:/opt/airflow/processing
       - airflow-logs:/opt/airflow/logs
     command: airflow webserver
     networks:
@@ -110,6 +111,7 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     volumes:
       - ./orchestration:/opt/airflow/dags
+      - ./processing:/opt/airflow/processing
       - airflow-logs:/opt/airflow/logs
     command: airflow scheduler
     networks:
