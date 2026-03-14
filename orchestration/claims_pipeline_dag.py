@@ -5,6 +5,7 @@ from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 from minio import Minio
+import psycopg2
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,16 @@ def get_minio_client() -> Minio:
     )
 
 
+def get_postgres_connection():
+    return psycopg2.connect(
+        host="postgres",
+        port=5432,
+        database="pipeline_db",
+        user="pgadmin",
+        password="pgpassword123",
+    )
+
+
 with DAG(
     dag_id="claims_pipeline",
     default_args=default_args,
@@ -47,8 +58,61 @@ with DAG(
         if not client.bucket_exists(RAW_BUCKET):
             raise Exception(f"Bucket {RAW_BUCKET} does not exist!")
 
-        client.stat_object(RAW_BUCKET, RAW_FILENAME)
+        obj = client.stat_object(RAW_BUCKET, RAW_FILENAME)
         logger.info("File %s found in %s ✅", RAW_FILENAME, RAW_BUCKET)
+
+        conn = None
+        cursor = None
+        try:
+            conn = get_postgres_connection()
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """
+                SELECT file_id
+                FROM file_registry
+                WHERE bucket_name = %s
+                  AND object_key = %s
+                """,
+                (RAW_BUCKET, RAW_FILENAME),
+            )
+            existing = cursor.fetchone()
+
+            if existing:
+                logger.info(
+                    "File already registered in file_registry with file_id=%s",
+                    existing[0],
+                )
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO file_registry (
+                        source_name,
+                        file_name,
+                        bucket_name,
+                        object_key,
+                        file_size_bytes,
+                        ingestion_status,
+                        received_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                    """,
+                    (
+                        "BCBS",
+                        RAW_FILENAME,
+                        RAW_BUCKET,
+                        RAW_FILENAME,
+                        obj.size,
+                        "RECEIVED",
+                    ),
+                )
+                conn.commit()
+                logger.info("File registered in file_registry ✅")
+        finally:
+            if cursor is not None:
+                cursor.close()
+            if conn is not None:
+                conn.close()
+
         return RAW_FILENAME
 
     check_file_task = PythonOperator(
@@ -80,6 +144,30 @@ with DAG(
         logger.info("Found %s output files in %s ✅", len(objects), CLEANSED_BUCKET)
         for obj in objects:
             logger.info("  → %s", obj.object_name)
+
+        conn = None
+        cursor = None
+        try:
+            conn = get_postgres_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE file_registry
+                SET ingestion_status = %s,
+                    processed_at = NOW(),
+                    error_message = NULL
+                WHERE bucket_name = %s
+                  AND object_key = %s
+                """,
+                ("CLEANSED", RAW_BUCKET, RAW_FILENAME),
+            )
+            conn.commit()
+            logger.info("file_registry updated to CLEANSED ✅")
+        finally:
+            if cursor is not None:
+                cursor.close()
+            if conn is not None:
+                conn.close()
 
         return len(objects)
 
