@@ -131,23 +131,27 @@ with DAG(
         """,
     )
 
-    def validate_output():
+    def validate_cleansed_output():
         client = get_minio_client()
-
-        if not client.bucket_exists(CLEANSED_BUCKET):
-            raise Exception(f"Bucket {CLEANSED_BUCKET} does not exist!")
-
-        objects = list(client.list_objects(CLEANSED_BUCKET, recursive=True))
-        if not objects:
-            raise Exception(f"No output files found in {CLEANSED_BUCKET}!")
-
-        logger.info("Found %s output files in %s ✅", len(objects), CLEANSED_BUCKET)
-        for obj in objects:
-            logger.info("  → %s", obj.object_name)
 
         conn = None
         cursor = None
         try:
+            # ── Validate Cleansed Output ─────────────────────
+            if not client.bucket_exists(CLEANSED_BUCKET):
+                raise Exception(
+                    f"Bucket {CLEANSED_BUCKET} does not exist!")
+
+            objects = list(client.list_objects(
+                CLEANSED_BUCKET, recursive=True))
+            if not objects:
+                raise Exception(
+                    f"No files found in {CLEANSED_BUCKET}!")
+
+            logger.info("Found %s files in %s ✅",
+                        len(objects), CLEANSED_BUCKET)
+
+            # ── Update file_registry to CLEANSED ─────────────
             conn = get_postgres_connection()
             cursor = conn.cursor()
             cursor.execute(
@@ -163,17 +167,123 @@ with DAG(
             )
             conn.commit()
             logger.info("file_registry updated to CLEANSED ✅")
+            return len(objects)
+
+        except Exception as e:
+            # ── Update file_registry to FAILED ───────────────
+            try:
+                conn = get_postgres_connection()
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    UPDATE file_registry
+                    SET ingestion_status = %s,
+                        error_message = %s
+                    WHERE bucket_name = %s
+                      AND object_key = %s
+                    """,
+                    ("FAILED", str(e), RAW_BUCKET, RAW_FILENAME),
+                )
+                conn.commit()
+                logger.info("file_registry updated to FAILED ✅")
+            except Exception:
+                logger.exception(
+                    "Failed to update file_registry on failure")
+            raise
+
         finally:
             if cursor is not None:
                 cursor.close()
             if conn is not None:
                 conn.close()
 
-        return len(objects)
-
-    validate_output_task = PythonOperator(
-        task_id="validate_output",
-        python_callable=validate_output,
+    validate_cleansed_task = PythonOperator(
+        task_id="validate_cleansed_output",
+        python_callable=validate_cleansed_output,
     )
 
-    check_file_task >> run_cleanse_task >> validate_output_task
+    run_transform_task = BashOperator(
+        task_id="run_claims_transform",
+        bash_command="""
+            spark-submit \
+                --master local[*] \
+                --packages io.delta:delta-spark_2.12:3.0.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262 \
+                --conf spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension \
+                --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog \
+                /opt/airflow/processing/pyspark/claims_transform.py
+        """,
+    )
+
+    def validate_transformed_output():
+        client = get_minio_client()
+
+        conn = None
+        cursor = None
+        try:
+            # ── Validate Transformed Output ──────────────────
+            transformed_bucket = "healthcare-transformed"
+            if not client.bucket_exists(transformed_bucket):
+                raise Exception(
+                    f"Bucket {transformed_bucket} does not exist!")
+
+            objects = list(client.list_objects(
+                transformed_bucket, recursive=True))
+            if not objects:
+                raise Exception(
+                    f"No files found in {transformed_bucket}!")
+
+            logger.info("Found %s files in %s ✅",
+                        len(objects), transformed_bucket)
+
+            # ── Update file_registry to TRANSFORMED ──────────
+            conn = get_postgres_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE file_registry
+                SET ingestion_status = %s,
+                    processed_at = NOW(),
+                    error_message = NULL
+                WHERE bucket_name = %s
+                  AND object_key = %s
+                """,
+                ("TRANSFORMED", RAW_BUCKET, RAW_FILENAME),
+            )
+            conn.commit()
+            logger.info("file_registry updated to TRANSFORMED ✅")
+            return len(objects)
+
+        except Exception as e:
+            # ── Update file_registry to FAILED ───────────────
+            try:
+                conn = get_postgres_connection()
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    UPDATE file_registry
+                    SET ingestion_status = %s,
+                        error_message = %s
+                    WHERE bucket_name = %s
+                      AND object_key = %s
+                    """,
+                    ("FAILED", str(e), RAW_BUCKET, RAW_FILENAME),
+                )
+                conn.commit()
+                logger.info("file_registry updated to FAILED ✅")
+            except Exception:
+                logger.exception(
+                    "Failed to update file_registry on failure")
+            raise
+
+        finally:
+            if cursor is not None:
+                cursor.close()
+            if conn is not None:
+                conn.close()
+
+    validate_transformed_task = PythonOperator(
+        task_id="validate_transformed_output",
+        python_callable=validate_transformed_output,
+    )
+
+    check_file_task >> run_cleanse_task >> validate_cleansed_task >> run_transform_task >> validate_transformed_task
