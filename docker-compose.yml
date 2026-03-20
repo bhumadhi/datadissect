@@ -58,6 +58,38 @@ services:
     networks:
       - healthcare-net
 
+  trino:
+    image: trinodb/trino:435
+    container_name: trino
+    ports:
+      - "8083:8080"
+    env_file:
+      - .env
+    environment:
+      # Pass MinIO and Postgres creds so catalog properties can use ${ENV:...}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./infra/trino/config.properties:/etc/trino/config.properties
+      - ./infra/trino/node.properties:/etc/trino/node.properties
+      - ./infra/trino/jvm.config:/etc/trino/jvm.config
+      - ./infra/trino/catalog:/etc/trino/catalog
+    depends_on:
+      minio:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - healthcare-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/info"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
   airflow-init:
     build:
       context: ./infra/airflow
