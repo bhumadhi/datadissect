@@ -5,6 +5,9 @@ data/transformed/*
 data/curated/*
 data/quarantine/*
 data/reference/*
+data/inbound/*
+data/outbound/*
+data/hold/*
 
 # Keep folder structure
 !data/raw/.gitkeep
@@ -13,6 +16,9 @@ data/reference/*
 !data/curated/.gitkeep
 !data/quarantine/.gitkeep
 !data/reference/.gitkeep
+!data/inbound/.gitkeep
+!data/outbound/.gitkeep
+!data/hold/.gitkeep
 
 # Python virtual environments
 venv/
@@ -43,4 +49,4 @@ target/
 # Secrets & configs with passwords
 config/*.env
 infra/**/*.env
-EOF
+
