@@ -14,17 +14,18 @@ from pyspark.sql import functions as F
 from pyspark.sql.functions import col, current_timestamp, datediff, lit, when
 
 # ── Path Utils ───────────────────────────────────────────────
-# Ensure common/ is importable when run via spark-submit inside Airflow container
 sys.path.insert(0, "/opt/airflow/processing")
 from common.path_utils import (
+    FileMeta,
+    parse_filename,
     cleansed_output_path,
-    cpt_summary_output_path,
-    payer_summary_output_path,
     transformed_output_path,
+    payer_summary_output_path,
+    cpt_summary_output_path,
 )
 
 
-# ── Logging Setup ────────────────────────────────────────────
+# ── Logging ──────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -35,14 +36,12 @@ JOB_NAME = "claims_transform_job"
 CPT_REF_PATH   = "s3a://healthcare-reference/cpt_codes.csv"
 ICD10_REF_PATH = "s3a://healthcare-reference/icd10_codes.csv"
 
-# Postgres — env vars with local fallback defaults
 POSTGRES_HOST     = os.getenv("POSTGRES_HOST",     "postgres")
 POSTGRES_PORT     = int(os.getenv("POSTGRES_PORT", "5432"))
 POSTGRES_DB       = os.getenv("POSTGRES_DB",       "pipeline_db")
 POSTGRES_USER     = os.getenv("POSTGRES_USER",     "pgadmin")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "pgpassword123")
 
-# MinIO — env vars with local fallback defaults
 MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://minio:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin123")
@@ -54,12 +53,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--file-name",
         required=True,
-        help="Source filename (e.g. BCBS001_837P_20260312.csv) — used to resolve input/output paths",
+        help="e.g. BCBS001_837P_PROD_20260312_001.csv",
     )
     return parser.parse_args()
 
 
-# ── Spark Session with Delta ─────────────────────────────────
+# ── Spark ────────────────────────────────────────────────────
 def build_spark() -> SparkSession:
     builder = (
         SparkSession.builder
@@ -82,7 +81,7 @@ def build_spark() -> SparkSession:
     return spark
 
 
-# ── PostgreSQL Logging ───────────────────────────────────────
+# ── Postgres Logging ─────────────────────────────────────────
 def log_to_postgres(
     status: str,
     run_time: datetime,
@@ -95,36 +94,20 @@ def log_to_postgres(
     cursor = None
     try:
         conn = psycopg2.connect(
-            host=POSTGRES_HOST,
-            port=POSTGRES_PORT,
-            database=POSTGRES_DB,
-            user=POSTGRES_USER,
+            host=POSTGRES_HOST, port=POSTGRES_PORT,
+            database=POSTGRES_DB, user=POSTGRES_USER,
             password=POSTGRES_PASSWORD,
         )
         cursor = conn.cursor()
         cursor.execute(
             """
             INSERT INTO pipeline_run (
-                pipeline_name,
-                run_status,
-                started_at,
-                ended_at,
-                records_read,
-                records_written,
-                records_rejected,
-                error_message
+                pipeline_name, run_status, started_at, ended_at,
+                records_read, records_written, records_rejected, error_message
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (
-                JOB_NAME,
-                status,
-                run_time,
-                datetime.now(timezone.utc),
-                records_read,
-                records_written,
-                records_rejected,
-                error_msg,
-            ),
+            (JOB_NAME, status, run_time, datetime.now(timezone.utc),
+             records_read, records_written, records_rejected, error_msg),
         )
         conn.commit()
         logger.info("Pipeline run logged to PostgreSQL with status=%s", status)
@@ -138,14 +121,18 @@ def log_to_postgres(
 # ── Main ─────────────────────────────────────────────────────
 def main() -> None:
     args = parse_args()
-    file_name = args.file_name
 
-    input_path        = cleansed_output_path(file_name)
-    output_path       = transformed_output_path(file_name)
-    payer_summary_path = payer_summary_output_path(file_name)
-    cpt_summary_path  = cpt_summary_output_path(file_name)
+    meta: FileMeta = parse_filename(args.file_name)
 
-    logger.info("Starting claims transform job for file: %s", file_name)
+    input_path        = cleansed_output_path(meta)
+    output_path       = transformed_output_path(meta)
+    payer_summary_path = payer_summary_output_path(meta)
+    cpt_summary_path  = cpt_summary_output_path(meta)
+
+    logger.info("Starting claims transform job")
+    logger.info("File:               %s", meta.file_name)
+    logger.info("Client:             %s", meta.client_code)
+    logger.info("Env:                %s", meta.env)
     logger.info("Input path:         %s", input_path)
     logger.info("Output path:        %s", output_path)
     logger.info("Payer summary path: %s", payer_summary_path)
@@ -154,16 +141,14 @@ def main() -> None:
     run_time = datetime.now(timezone.utc)
     started  = time.time()
 
-    # Initialise counts so failure logging never breaks
     raw_count         = 0
     transformed_count = 0
-    summary_count     = 0
 
     spark = build_spark()
     logger.info("Spark session with Delta created successfully")
 
     try:
-        # ── Read Cleansed Claims from MinIO ──────────────────
+        # ── Read Cleansed Claims ──────────────────────────────
         logger.info("Reading cleansed claims from %s", input_path)
         cleansed_df = spark.read.parquet(input_path)
 
@@ -171,7 +156,7 @@ def main() -> None:
         logger.info("Cleansed record count: %s", raw_count)
         cleansed_df.printSchema()
 
-        # ── Read Reference Data ──────────────────────────────
+        # ── Reference Data ───────────────────────────────────
         logger.info("Loading reference data...")
         cpt_df = (
             spark.read
@@ -185,7 +170,6 @@ def main() -> None:
                 col("typical_duration_mins"),
             )
         )
-
         icd10_df = (
             spark.read
             .option("header", "true")
@@ -198,13 +182,10 @@ def main() -> None:
                 col("chronic_flag"),
             )
         )
-
         logger.info("CPT codes loaded: %s",   cpt_df.count())
         logger.info("ICD10 codes loaded: %s", icd10_df.count())
-        cpt_df.show(5, truncate=False)
-        icd10_df.show(5, truncate=False)
 
-        # ── Join with Reference Data ─────────────────────────
+        # ── Enrich ───────────────────────────────────────────
         logger.info("Joining with reference data...")
         enriched_df = (
             cleansed_df
@@ -214,9 +195,8 @@ def main() -> None:
             .join(icd10_df, on="icd10_code", how="left")
         )
         logger.info("Enriched record count: %s", enriched_df.count())
-        enriched_df.show(5, truncate=False)
 
-        # ── Standardize Columns ──────────────────────────────
+        # ── Standardize ──────────────────────────────────────
         logger.info("Standardizing columns...")
         standardized_df = (
             enriched_df
@@ -259,7 +239,7 @@ def main() -> None:
         logger.info("Transformed record count: %s", transformed_count)
         transformed_df.show(5, truncate=False)
 
-        # ── Write Transformed Data as Delta ──────────────────
+        # ── Write Transformed Delta ───────────────────────────
         logger.info("Writing transformed data to %s", output_path)
         (
             transformed_df.write
@@ -287,7 +267,7 @@ def main() -> None:
         )
 
         # ── CPT Summary ──────────────────────────────────────
-        logger.info("Building CPT code summary...")
+        logger.info("Building CPT summary...")
         cpt_summary_df = (
             transformed_df
             .groupBy("cpt_code", "cpt_description", "cpt_category")
@@ -301,15 +281,9 @@ def main() -> None:
             .withColumn("summarized_at", current_timestamp())
         )
 
-        payer_count   = payer_summary_df.count()
-        cpt_count     = cpt_summary_df.count()
-        summary_count = payer_count + cpt_count
-        logger.info("Payer summary rows: %s", payer_count)
-        logger.info("CPT summary rows:   %s", cpt_count)
-        payer_summary_df.show(truncate=False)
-        cpt_summary_df.show(truncate=False)
+        logger.info("Payer summary rows: %s", payer_summary_df.count())
+        logger.info("CPT summary rows:   %s", cpt_summary_df.count())
 
-        # ── Write Summaries as Delta ─────────────────────────
         logger.info("Writing payer summary to %s", payer_summary_path)
         (
             payer_summary_df.write
@@ -340,7 +314,7 @@ def main() -> None:
         )
 
     except Exception as e:
-        logger.exception("Claims transform job failed for file: %s", file_name)
+        logger.exception("Claims transform job failed for file: %s", meta.file_name)
         try:
             log_to_postgres(
                 status="FAILED",

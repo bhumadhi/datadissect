@@ -11,11 +11,13 @@ import psycopg2
 from delta import configure_spark_with_delta_pip
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.functions import col, current_timestamp
+from pyspark.sql.functions import col, current_timestamp, lit
 
 # ── Path Utils ───────────────────────────────────────────────
 sys.path.insert(0, "/opt/airflow/processing")
 from common.path_utils import (
+    FileMeta,
+    parse_filename,
     transformed_output_path,
     curated_member_summary_path,
     curated_payer_summary_path,
@@ -23,7 +25,7 @@ from common.path_utils import (
 )
 
 
-# ── Logging Setup ────────────────────────────────────────────
+# ── Logging ──────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -31,14 +33,12 @@ logger = logging.getLogger(__name__)
 # ── Constants ────────────────────────────────────────────────
 JOB_NAME = "claims_curate_job"
 
-# Postgres — env vars with local fallback defaults
 POSTGRES_HOST     = os.getenv("POSTGRES_HOST",     "postgres")
 POSTGRES_PORT     = int(os.getenv("POSTGRES_PORT", "5432"))
 POSTGRES_DB       = os.getenv("POSTGRES_DB",       "pipeline_db")
 POSTGRES_USER     = os.getenv("POSTGRES_USER",     "pgadmin")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "pgpassword123")
 
-# MinIO — env vars with local fallback defaults
 MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://minio:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin123")
@@ -50,12 +50,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--file-name",
         required=True,
-        help="Source filename (e.g. BCBS001_837P_20260312.csv) — used to resolve input/output paths",
+        help="e.g. BCBS001_837P_PROD_20260312_001.csv",
     )
     return parser.parse_args()
 
 
-# ── Spark Session with Delta ─────────────────────────────────
+# ── Spark ────────────────────────────────────────────────────
 def build_spark() -> SparkSession:
     builder = (
         SparkSession.builder
@@ -78,7 +78,7 @@ def build_spark() -> SparkSession:
     return spark
 
 
-# ── PostgreSQL Logging ───────────────────────────────────────
+# ── Postgres Logging ─────────────────────────────────────────
 def log_to_postgres(
     status: str,
     run_time: datetime,
@@ -91,36 +91,20 @@ def log_to_postgres(
     cursor = None
     try:
         conn = psycopg2.connect(
-            host=POSTGRES_HOST,
-            port=POSTGRES_PORT,
-            database=POSTGRES_DB,
-            user=POSTGRES_USER,
+            host=POSTGRES_HOST, port=POSTGRES_PORT,
+            database=POSTGRES_DB, user=POSTGRES_USER,
             password=POSTGRES_PASSWORD,
         )
         cursor = conn.cursor()
         cursor.execute(
             """
             INSERT INTO pipeline_run (
-                pipeline_name,
-                run_status,
-                started_at,
-                ended_at,
-                records_read,
-                records_written,
-                records_rejected,
-                error_message
+                pipeline_name, run_status, started_at, ended_at,
+                records_read, records_written, records_rejected, error_message
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (
-                JOB_NAME,
-                status,
-                run_time,
-                datetime.now(timezone.utc),
-                records_read,
-                records_written,
-                records_rejected,
-                error_msg,
-            ),
+            (JOB_NAME, status, run_time, datetime.now(timezone.utc),
+             records_read, records_written, records_rejected, error_msg),
         )
         conn.commit()
         logger.info("Pipeline run logged to PostgreSQL with status=%s", status)
@@ -134,14 +118,18 @@ def log_to_postgres(
 # ── Main ─────────────────────────────────────────────────────
 def main() -> None:
     args = parse_args()
-    file_name = args.file_name
 
-    input_path       = transformed_output_path(file_name)
-    member_path      = curated_member_summary_path(file_name)
-    payer_path       = curated_payer_summary_path(file_name)
-    provider_path    = curated_provider_summary_path(file_name)
+    meta: FileMeta = parse_filename(args.file_name)
 
-    logger.info("Starting claims curate job for file: %s", file_name)
+    input_path    = transformed_output_path(meta)
+    member_path   = curated_member_summary_path(meta)
+    payer_path    = curated_payer_summary_path(meta)
+    provider_path = curated_provider_summary_path(meta)
+
+    logger.info("Starting claims curate job")
+    logger.info("File:                  %s", meta.file_name)
+    logger.info("Client:                %s", meta.client_code)
+    logger.info("Env:                   %s", meta.env)
     logger.info("Input path:            %s", input_path)
     logger.info("Member summary path:   %s", member_path)
     logger.info("Payer summary path:    %s", payer_path)
@@ -150,8 +138,7 @@ def main() -> None:
     run_time = datetime.now(timezone.utc)
     started  = time.time()
 
-    # Initialise counts so failure logging never breaks
-    raw_count     = 0
+    raw_count       = 0
     records_written = 0
 
     spark = build_spark()
@@ -160,16 +147,12 @@ def main() -> None:
     try:
         # ── Read Transformed Claims ──────────────────────────
         logger.info("Reading transformed claims from %s", input_path)
-        transformed_df = (
-            spark.read
-            .format("delta")
-            .load(input_path)
-        )
+        transformed_df = spark.read.format("delta").load(input_path)
 
         raw_count = transformed_df.count()
         logger.info("Transformed record count: %s", raw_count)
 
-        # Cache — used by all 3 aggregations
+        # Cache — reused by all 3 aggregations
         transformed_df.cache()
 
         # ── Member Summary ───────────────────────────────────
@@ -190,7 +173,6 @@ def main() -> None:
             )
             .withColumn("curated_at", current_timestamp())
         )
-
         member_count = member_summary_df.count()
         logger.info("Member summary rows: %s", member_count)
         member_summary_df.show(5, truncate=False)
@@ -207,19 +189,12 @@ def main() -> None:
                 F.countDistinct("member_id_hash").alias("unique_members"),
                 F.countDistinct("provider_npi_hash").alias("unique_providers"),
                 F.round(F.avg("claim_age_days"), 1).alias("avg_claim_age_days"),
-                F.count(
-                    F.when(col("billed_category") == "LOW", True)
-                ).alias("low_claims"),
-                F.count(
-                    F.when(col("billed_category") == "MEDIUM", True)
-                ).alias("medium_claims"),
-                F.count(
-                    F.when(col("billed_category") == "HIGH", True)
-                ).alias("high_claims"),
+                F.count(F.when(col("billed_category") == "LOW",    True)).alias("low_claims"),
+                F.count(F.when(col("billed_category") == "MEDIUM", True)).alias("medium_claims"),
+                F.count(F.when(col("billed_category") == "HIGH",   True)).alias("high_claims"),
             )
             .withColumn("curated_at", current_timestamp())
         )
-
         payer_count = payer_summary_df.count()
         logger.info("Payer summary rows: %s", payer_count)
         payer_summary_df.show(5, truncate=False)
@@ -239,7 +214,6 @@ def main() -> None:
             )
             .withColumn("curated_at", current_timestamp())
         )
-
         provider_count = provider_summary_df.count()
         logger.info("Provider summary rows: %s", provider_count)
         provider_summary_df.show(5, truncate=False)
@@ -247,36 +221,22 @@ def main() -> None:
         records_written = member_count + payer_count + provider_count
 
         # ── Write as Delta ───────────────────────────────────
-        logger.info("Writing member summary to %s", member_path)
-        (
-            member_summary_df.write
-            .format("delta")
-            .mode("overwrite")
-            .option("overwriteSchema", "true")
-            .save(member_path)
-        )
-
-        logger.info("Writing payer summary to %s", payer_path)
-        (
-            payer_summary_df.write
-            .format("delta")
-            .mode("overwrite")
-            .option("overwriteSchema", "true")
-            .save(payer_path)
-        )
-
-        logger.info("Writing provider summary to %s", provider_path)
-        (
-            provider_summary_df.write
-            .format("delta")
-            .mode("overwrite")
-            .option("overwriteSchema", "true")
-            .save(provider_path)
-        )
+        for df, path, label in [
+            (member_summary_df,   member_path,   "member"),
+            (payer_summary_df,    payer_path,    "payer"),
+            (provider_summary_df, provider_path, "provider"),
+        ]:
+            logger.info("Writing %s summary to %s", label, path)
+            (
+                df.write
+                .format("delta")
+                .mode("overwrite")
+                .option("overwriteSchema", "true")
+                .save(path)
+            )
 
         logger.info("All curated summaries written as Delta ✅")
 
-        # Unpersist cache
         transformed_df.unpersist()
 
         elapsed = round(time.time() - started, 2)
@@ -290,7 +250,7 @@ def main() -> None:
         )
 
     except Exception as e:
-        logger.exception("Claims curate job failed for file: %s", file_name)
+        logger.exception("Claims curate job failed for file: %s", meta.file_name)
         try:
             log_to_postgres(
                 status="FAILED",

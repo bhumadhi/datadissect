@@ -13,16 +13,17 @@ from pyspark.sql import functions as F
 from pyspark.sql.functions import col, current_timestamp, lit, sha2
 
 # ── Path Utils ───────────────────────────────────────────────
-# Ensure common/ is importable when run via spark-submit inside Airflow container
 sys.path.insert(0, "/opt/airflow/processing")
 from common.path_utils import (
+    FileMeta,
+    parse_filename,
+    raw_input_path,
     cleansed_output_path,
     quarantine_output_path,
-    raw_input_path,
 )
 
 
-# ── Logging Setup ────────────────────────────────────────────
+# ── Logging ──────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -30,14 +31,12 @@ logger = logging.getLogger(__name__)
 # ── Constants ────────────────────────────────────────────────
 JOB_NAME = "claims_cleanse_job"
 
-# Postgres — env vars with local fallback defaults
 POSTGRES_HOST     = os.getenv("POSTGRES_HOST",     "postgres")
 POSTGRES_PORT     = int(os.getenv("POSTGRES_PORT", "5432"))
 POSTGRES_DB       = os.getenv("POSTGRES_DB",       "pipeline_db")
 POSTGRES_USER     = os.getenv("POSTGRES_USER",     "pgadmin")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "pgpassword123")
 
-# MinIO — env vars with local fallback defaults
 MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://minio:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin123")
@@ -49,12 +48,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--file-name",
         required=True,
-        help="Raw input filename in MinIO (e.g. BCBS001_837P_20260312.csv)",
+        help="e.g. BCBS001_837P_PROD_20260312_001.csv",
     )
     return parser.parse_args()
 
 
-# ── Spark Session ────────────────────────────────────────────
+# ── Spark ────────────────────────────────────────────────────
 def build_spark() -> SparkSession:
     spark = (
         SparkSession.builder
@@ -73,7 +72,7 @@ def build_spark() -> SparkSession:
     return spark
 
 
-# ── PostgreSQL Logging ───────────────────────────────────────
+# ── Postgres Logging ─────────────────────────────────────────
 def log_to_postgres(
     status: str,
     run_time: datetime,
@@ -86,36 +85,20 @@ def log_to_postgres(
     cursor = None
     try:
         conn = psycopg2.connect(
-            host=POSTGRES_HOST,
-            port=POSTGRES_PORT,
-            database=POSTGRES_DB,
-            user=POSTGRES_USER,
+            host=POSTGRES_HOST, port=POSTGRES_PORT,
+            database=POSTGRES_DB, user=POSTGRES_USER,
             password=POSTGRES_PASSWORD,
         )
         cursor = conn.cursor()
         cursor.execute(
             """
             INSERT INTO pipeline_run (
-                pipeline_name,
-                run_status,
-                started_at,
-                ended_at,
-                records_read,
-                records_written,
-                records_rejected,
-                error_message
+                pipeline_name, run_status, started_at, ended_at,
+                records_read, records_written, records_rejected, error_message
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (
-                JOB_NAME,
-                status,
-                run_time,
-                datetime.now(timezone.utc),
-                records_read,
-                records_written,
-                records_rejected,
-                error_msg,
-            ),
+            (JOB_NAME, status, run_time, datetime.now(timezone.utc),
+             records_read, records_written, records_rejected, error_msg),
         )
         conn.commit()
         logger.info("Pipeline run logged to PostgreSQL with status=%s", status)
@@ -129,13 +112,21 @@ def log_to_postgres(
 # ── Main ─────────────────────────────────────────────────────
 def main() -> None:
     args = parse_args()
-    file_name = args.file_name
 
-    input_path      = raw_input_path(file_name)
-    clean_path      = cleansed_output_path(file_name)
-    quarantine_path = quarantine_output_path(file_name)
+    # Parse once — FileMeta is the source of truth for all paths
+    meta: FileMeta = parse_filename(args.file_name)
 
-    logger.info("Starting claims cleanse job for file: %s", file_name)
+    input_path      = raw_input_path(meta)
+    clean_path      = cleansed_output_path(meta)
+    quarantine_path = quarantine_output_path(meta)
+
+    logger.info("Starting claims cleanse job")
+    logger.info("File:            %s", meta.file_name)
+    logger.info("Client:          %s", meta.client_code)
+    logger.info("File type:       %s", meta.file_type)
+    logger.info("Env:             %s", meta.env)
+    logger.info("Date:            %s", meta.date)
+    logger.info("Sequence:        %s", meta.sequence)
     logger.info("Input path:      %s", input_path)
     logger.info("Cleansed path:   %s", clean_path)
     logger.info("Quarantine path: %s", quarantine_path)
@@ -143,7 +134,6 @@ def main() -> None:
     run_time = datetime.now(timezone.utc)
     started  = time.time()
 
-    # Initialise counts so failure logging never breaks
     raw_count        = 0
     cleansed_count   = 0
     quarantine_count = 0
@@ -152,7 +142,7 @@ def main() -> None:
     logger.info("Spark session created successfully")
 
     try:
-        # ── Read CSV from MinIO ──────────────────────────────
+        # ── Read CSV ─────────────────────────────────────────
         logger.info("Reading claims from %s", input_path)
         raw_df = (
             spark.read
@@ -165,7 +155,7 @@ def main() -> None:
         raw_df.printSchema()
         raw_df.show(5, truncate=False)
 
-        # ── Validation Rules ─────────────────────────────────
+        # ── Validation ───────────────────────────────────────
         logger.info("Applying validation rules...")
         validated_df = (
             raw_df
@@ -214,20 +204,21 @@ def main() -> None:
             .withColumn("member_id_hash",    sha2(col("member_id").cast("string"),    256))
             .withColumn("provider_npi_hash", sha2(col("provider_npi").cast("string"), 256))
             .drop("member_id", "provider_npi")
-            .withColumn("processed_at", current_timestamp())
-            .withColumn("source_file",  lit(file_name))
+            .withColumn("processed_at",  current_timestamp())
+            .withColumn("source_file",   lit(meta.file_name))
+            .withColumn("client_code",   lit(meta.client_code))
+            .withColumn("file_type",     lit(meta.file_type))
+            .withColumn("env",           lit(meta.env))
         )
 
         cleansed_count = cleansed_df.count()
         logger.info("Cleansed records: %s", cleansed_count)
-        logger.info("PHI masking complete")
         cleansed_df.show(5, truncate=False)
 
-        # ── Write Cleansed Data ──────────────────────────────
+        # ── Write ────────────────────────────────────────────
         logger.info("Writing cleansed data to %s", clean_path)
         cleansed_df.write.mode("overwrite").parquet(clean_path)
 
-        # ── Write Quarantine Data ────────────────────────────
         if quarantine_count > 0:
             logger.info("Writing quarantine data to %s", quarantine_path)
             quarantine_df.write.mode("overwrite").parquet(quarantine_path)
@@ -244,7 +235,7 @@ def main() -> None:
         )
 
     except Exception as e:
-        logger.exception("Claims cleanse job failed for file: %s", file_name)
+        logger.exception("Claims cleanse job failed for file: %s", meta.file_name)
         try:
             log_to_postgres(
                 status="FAILED",
@@ -255,7 +246,7 @@ def main() -> None:
                 error_msg=str(e),
             )
         except Exception:
-            logger.exception("Failed to log job failure to PostgreSQL")
+            logger.exception("Failed to log failure to PostgreSQL")
         raise
 
     finally:
