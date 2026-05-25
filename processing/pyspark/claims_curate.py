@@ -57,6 +57,7 @@ def parse_args() -> argparse.Namespace:
 
 # ── Spark ────────────────────────────────────────────────────
 def build_spark() -> SparkSession:
+    s3a_endpoint = MINIO_ENDPOINT.replace("http://", "").replace("https://", "")
     builder = (
         SparkSession.builder
         .appName("Claims-Curate-Job")
@@ -64,7 +65,7 @@ def build_spark() -> SparkSession:
                 "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog",
                 "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-        .config("spark.hadoop.fs.s3a.endpoint",               MINIO_ENDPOINT)
+        .config("spark.hadoop.fs.s3a.endpoint",               s3a_endpoint)
         .config("spark.hadoop.fs.s3a.access.key",             MINIO_ACCESS_KEY)
         .config("spark.hadoop.fs.s3a.secret.key",             MINIO_SECRET_KEY)
         .config("spark.hadoop.fs.s3a.path.style.access",      "true")

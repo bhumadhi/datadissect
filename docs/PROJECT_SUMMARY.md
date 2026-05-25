@@ -1,10 +1,10 @@
-# Healthcare Data Platform — Project Summary
+# DataDissect — Project Summary
 
 ## Project Goal
-Build a production-grade healthcare claims data pipeline end-to-end using industry standard tools — to learn the full data engineering stack independently and build a portfolio piece that demonstrates end-to-end ownership for principal/architect-level roles.
+Build a production-grade data platform end-to-end using industry standard tools — systematically dissecting every layer of the data engineering stack to develop both the theory and hands-on coding ability to operate without assistance at a principal/architect level.
 
-**Domain:** Healthcare claims & billing (X12 EDI 837P/837I format)
-**Pattern:** Micro-batch (sweet spot for claims data)
+**First domain:** Healthcare claims & billing (X12 EDI 837P/837I format) — batch file ingestion, Medallion architecture, Delta Lake
+**Pattern:** Micro-batch (sweet spot for claims data); streaming and CDC to follow in later domains
 **Philosophy:** Every design decision is conscious and explainable — not just "it works"
 
 ---
@@ -54,7 +54,7 @@ plotly                 ← charts
 ## Project Structure (Current)
 
 ```
-healthcare-pipeline/
+datadissect/
 ├── ingestion/                    ← Kafka producer (future)
 ├── processing/
 │   ├── scala/                    ← Scala Spark jobs (future)
@@ -918,3 +918,12 @@ Phase 17: dbt models on top of Trino for analytics
 > "Partitioned by CLIENT/FILE_TYPE/ENV so Spark can prune at directory level. Reading all BCBS001
 > professional claims across dates scans only claims/BCBS001/837P/PROD/*/ — not the entire bucket.
 > DATE and SEQUENCE kept together as the leaf folder — they're typically queried as a unit."
+
+
+Revised sequencing rule:
+Same CLIENT + FILE_TYPE   → sequential, one at a time, FIFO queue
+Same CLIENT, diff FILE_TYPE → parallel, no coordination needed
+
+BCBS001 + 837P  → queue: 001 runs, 002 waits, 003 waits
+BCBS001 + MEMBER → separate queue, runs immediately regardless of 837P status
+BCBS001 + 835   → separate queue, runs immediately
