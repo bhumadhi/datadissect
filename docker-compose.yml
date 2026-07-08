@@ -3,9 +3,13 @@ services:
   minio:
     image: minio/minio
     container_name: minio
+    # All published ports are 127.0.0.1-only: containers talk over
+    # healthcare-net regardless; publishing is host access only. Browser UIs
+    # are reachable remotely via Tailscale TCP forwards (setup_tailscale.sh
+    # in ema_trading_system_alpaca); databases get no forward at all.
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     env_file:
       - .env
     environment:
@@ -26,7 +30,7 @@ services:
     image: postgres:16
     container_name: postgres
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     env_file:
       - .env
     environment:
@@ -49,9 +53,9 @@ services:
     entrypoint: /opt/spark/bin/spark-class
     command: org.apache.spark.deploy.master.Master
     ports:
-      - "8080:8080"
-      - "7077:7077"
-      - "4040:4040"
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:7077:7077"
+      - "127.0.0.1:4040:4040"
     volumes:
       - ./processing:/opt/spark/jobs
       - ./data:/opt/spark/data
@@ -62,7 +66,7 @@ services:
     image: trinodb/trino:435
     container_name: trino
     ports:
-      - "8083:8080"
+      - "127.0.0.1:8083:8080"
     env_file:
       - .env
     environment:
@@ -128,7 +132,7 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
       AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth'
     ports:
-      - "8082:8080"
+      - "127.0.0.1:8082:8080"
     volumes:
       - ./orchestration:/opt/airflow/dags
       - ./processing:/opt/airflow/processing

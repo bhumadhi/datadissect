@@ -1,0 +1,9 @@
+# Localhost-only: streamlit defaults to 0.0.0.0 (all interfaces).
+# Remote access is via the Tailscale TCP forward on 8501
+# (setup_tailscale.sh in ema_trading_system_alpaca).
+[server]
+address = "127.0.0.1"
+port = 8501
+
+[browser]
+gatherUsageStats = false
