@@ -124,10 +124,10 @@ Streamlit            8501    ✅ running
 ## Service Credentials
 
 ```
-MinIO Console:   http://localhost:9001   minioadmin / minioadmin123
+MinIO Console:   http://localhost:9001   ${MINIO_ACCESS_KEY} / ${MINIO_SECRET_KEY}
 MinIO API:       http://localhost:9000
-PostgreSQL:      localhost:5432          pgadmin / pgpassword123
-Airflow UI:      http://localhost:8082   admin / admin123
+PostgreSQL:      localhost:5432          ${POSTGRES_USER} / ${POSTGRES_PASSWORD}
+Airflow UI:      http://localhost:8082   admin / ${AIRFLOW_PASSWORD}
 Spark UI:        http://localhost:8080
 Trino:           http://localhost:8083
 Streamlit:       http://localhost:8501
@@ -341,7 +341,7 @@ docker exec airflow-webserver airflow dags trigger claims_pipeline \
   --conf '{"file_name": "BCBS001_837P_PROD_20260312_001.csv"}'
 
 # Via REST API (used by file watcher)
-curl -u admin:admin123 \
+curl -u admin:${AIRFLOW_PASSWORD} \
   -X POST http://localhost:8082/api/v1/dags/claims_pipeline/dagRuns \
   -H "Content-Type: application/json" \
   -d '{"conf": {"file_name": "BCBS001_837P_PROD_20260312_001.csv"}}'
@@ -359,8 +359,8 @@ meta = parse_filename(args.file_name)   # FileMeta — single source of truth
 
 # SparkSession — all credentials from env vars
 MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://minio:9000")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin123")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "${MINIO_ACCESS_KEY}")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "${MINIO_SECRET_KEY}")
 
 # Error handling
 try:
@@ -652,8 +652,8 @@ docker exec --user airflow -it airflow-scheduler bash
 # then spark-submit ...
 
 # PostgreSQL
-docker exec -it postgres psql -U pgadmin -d pipeline_db
-docker exec -i postgres psql -U pgadmin -d pipeline_db < migrate_file_registry.sql
+docker exec -it postgres psql -U ${POSTGRES_USER} -d pipeline_db
+docker exec -i postgres psql -U ${POSTGRES_USER} -d pipeline_db < migrate_file_registry.sql
 
 # Trino
 docker exec -it trino trino

@@ -50,3 +50,6 @@ target/
 config/*.env
 infra/**/*.env
 
+
+# Working notes (kept locally, not part of the published artifact)
+docs/NextChat.MD

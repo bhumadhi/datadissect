@@ -64,8 +64,8 @@ hive.metastore=file
 hive.metastore.catalog.dir=s3a://healthcare-metadata/trino-catalog
 hive.s3.endpoint=http://minio:9000
 hive.s3.path-style-access=true
-hive.s3.aws-access-key=minioadmin
-hive.s3.aws-secret-key=minioadmin123
+hive.s3.aws-access-key=${MINIO_ACCESS_KEY}
+hive.s3.aws-secret-key=${MINIO_SECRET_KEY}
 delta.register-table-procedure.enabled=true
 ```
 
@@ -75,8 +75,8 @@ delta.register-table-procedure.enabled=true
 ```properties
 connector.name=postgresql
 connection-url=jdbc:postgresql://postgres:5432/pipeline_db
-connection-user=pgadmin
-connection-password=pgpassword123
+connection-user=${POSTGRES_USER}
+connection-password=${POSTGRES_PASSWORD}
 ```
 
 **Registering Delta tables (run once after pipeline produces output):**

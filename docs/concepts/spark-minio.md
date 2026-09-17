@@ -31,8 +31,8 @@ spark = (
     SparkSession.builder
     .appName("Claims-Cleanse-Job")
     .config("spark.hadoop.fs.s3a.endpoint",               "http://minio:9000")
-    .config("spark.hadoop.fs.s3a.access.key",             "minioadmin")
-    .config("spark.hadoop.fs.s3a.secret.key",             "minioadmin123")
+    .config("spark.hadoop.fs.s3a.access.key",             "${MINIO_ACCESS_KEY}")
+    .config("spark.hadoop.fs.s3a.secret.key",             "${MINIO_SECRET_KEY}")
     .config("spark.hadoop.fs.s3a.path.style.access",      "true")
     .config("spark.hadoop.fs.s3a.impl",                   "org.apache.hadoop.fs.s3a.S3AFileSystem")
     .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")

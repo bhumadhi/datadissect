@@ -130,7 +130,7 @@ Every validate task calls this with the appropriate status: `CLEANSED`, `TRANSFO
 **Triggering via REST API:**
 
 ```bash
-curl -u admin:admin123 \
+curl -u admin:${AIRFLOW_PASSWORD} \
   -X POST http://localhost:8082/api/v1/dags/claims_pipeline/dagRuns \
   -H "Content-Type: application/json" \
   -d '{"conf": {"file_name": "BCBS001_837P_PROD_20260312_001.csv"}}'

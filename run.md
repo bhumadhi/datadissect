@@ -17,12 +17,12 @@ docker ps
 
 | Service           | URL                        | Credentials               |
 |-------------------|----------------------------|---------------------------|
-| MinIO Console     | http://localhost:9001      | minioadmin / minioadmin123 |
+| MinIO Console     | http://localhost:9001      | ${MINIO_ACCESS_KEY} / ${MINIO_SECRET_KEY} |
 | MinIO API         | http://localhost:9000      | —                         |
-| Airflow UI        | http://localhost:8082      | admin / admin123          |
+| Airflow UI        | http://localhost:8082      | admin / ${AIRFLOW_PASSWORD}          |
 | Spark UI          | http://localhost:8080      | —                         |
 | Trino             | http://localhost:8083      | —                         |
-| PostgreSQL        | localhost:5432             | pgadmin / pgpassword123   |
+| PostgreSQL        | localhost:5432             | ${POSTGRES_USER} / ${POSTGRES_PASSWORD}   |
 
 Stop the stack:
 
@@ -45,7 +45,7 @@ python3 scripts/init_minio.py
 Also initialize the PostgreSQL schema:
 
 ```bash
-docker exec -i postgres psql -U pgadmin -d pipeline_db < scripts/init_db.sql
+docker exec -i postgres psql -U ${POSTGRES_USER} -d pipeline_db < scripts/init_db.sql
 ```
 
 ---
@@ -92,7 +92,7 @@ docker exec airflow-webserver airflow dags trigger claims_pipeline \
 # Via REST API (same as file_watcher.py uses)
 curl -X POST "http://localhost:8082/api/v1/dags/claims_pipeline/dagRuns" \
   -H "Content-Type: application/json" \
-  -u "admin:admin123" \
+  -u "admin:${AIRFLOW_PASSWORD}" \
   -d '{"conf": {"file_name": "BCBS001_837P_PROD_20260312_001.csv"}}'
 ```
 
@@ -105,7 +105,7 @@ docker exec -it trino trino
 ### PostgreSQL CLI
 
 ```bash
-docker exec -it postgres psql -U pgadmin -d pipeline_db
+docker exec -it postgres psql -U ${POSTGRES_USER} -d pipeline_db
 ```
 
 ### Recovery tool (reprocess files that arrived while watcher was down)
@@ -154,7 +154,7 @@ curl -I http://localhost:9000/minio/health/live
 # List buckets from inside the Airflow container (same network as Spark jobs)
 docker exec airflow-scheduler python3 -c "
 from minio import Minio
-c = Minio('minio:9000', access_key='minioadmin', secret_key='minioadmin123', secure=False)
+c = Minio('minio:9000', access_key='${MINIO_ACCESS_KEY}', secret_key='${MINIO_SECRET_KEY}', secure=False)
 print([b.name for b in c.list_buckets()])
 "
 ```
@@ -173,7 +173,7 @@ List objects inside a specific bucket:
 ```bash
 docker exec airflow-scheduler python3 -c "
 from minio import Minio
-c = Minio('minio:9000', access_key='minioadmin', secret_key='minioadmin123', secure=False)
+c = Minio('minio:9000', access_key='${MINIO_ACCESS_KEY}', secret_key='${MINIO_SECRET_KEY}', secure=False)
 for obj in c.list_objects('healthcare-raw', recursive=True):
     print(obj.object_name, obj.size)
 "
@@ -185,7 +185,7 @@ for obj in c.list_objects('healthcare-raw', recursive=True):
 
 ```bash
 # Connect and list tables
-docker exec -it postgres psql -U pgadmin -d pipeline_db -c "\dt"
+docker exec -it postgres psql -U ${POSTGRES_USER} -d pipeline_db -c "\dt"
 ```
 
 Expected tables: `source_system`, `file_registry`, `pipeline_run`
@@ -193,13 +193,13 @@ Expected tables: `source_system`, `file_registry`, `pipeline_run`
 If tables are missing (happens after volume reset):
 
 ```bash
-docker exec -i postgres psql -U pgadmin -d pipeline_db < scripts/init_db.sql
+docker exec -i postgres psql -U ${POSTGRES_USER} -d pipeline_db < scripts/init_db.sql
 ```
 
 Check recent pipeline run results:
 
 ```bash
-docker exec postgres psql -U pgadmin -d pipeline_db -c \
+docker exec postgres psql -U ${POSTGRES_USER} -d pipeline_db -c \
   "SELECT pipeline_name, run_status, records_read, records_written, records_rejected, started_at
    FROM pipeline_run ORDER BY started_at DESC LIMIT 10;"
 ```
@@ -207,7 +207,7 @@ docker exec postgres psql -U pgadmin -d pipeline_db -c \
 Check file registry status:
 
 ```bash
-docker exec postgres psql -U pgadmin -d pipeline_db -c \
+docker exec postgres psql -U ${POSTGRES_USER} -d pipeline_db -c \
   "SELECT file_name, ingestion_status, received_at, error_message
    FROM file_registry ORDER BY received_at DESC LIMIT 10;"
 ```
@@ -221,13 +221,13 @@ docker exec postgres psql -U pgadmin -d pipeline_db -c \
 curl -s http://localhost:8082/health | python3 -m json.tool
 
 # List all DAGs and their paused state
-curl -s http://localhost:8082/api/v1/dags -u "admin:admin123" | \
+curl -s http://localhost:8082/api/v1/dags -u "admin:${AIRFLOW_PASSWORD}" | \
   python3 -c "import sys,json; [print(d['dag_id'], '| paused:', d['is_paused']) for d in json.load(sys.stdin)['dags']]"
 
 # Unpause a DAG
 curl -X PATCH http://localhost:8082/api/v1/dags/claims_pipeline \
   -H "Content-Type: application/json" \
-  -u "admin:admin123" \
+  -u "admin:${AIRFLOW_PASSWORD}" \
   -d '{"is_paused": false}'
 ```
 
@@ -250,7 +250,7 @@ Or use the API:
 DAG_RUN_ID="manual__2026-05-23T23:34:27.160409+00:00"   # replace with actual run ID
 
 curl -s "http://localhost:8082/api/v1/dags/claims_pipeline/dagRuns/${DAG_RUN_ID}/taskInstances" \
-  -u "admin:admin123" | \
+  -u "admin:${AIRFLOW_PASSWORD}" | \
   python3 -c "
 import sys, json
 for t in json.load(sys.stdin)['task_instances']:
@@ -342,8 +342,8 @@ docker exec airflow-scheduler curl -I http://minio:9000/minio/health/live
 | Error | What it means | Fix |
 |-------|--------------|-----|
 | `NoSuchBucket` | Output bucket doesn't exist | `python3 scripts/init_minio.py` |
-| `relation "file_registry" does not exist` | DB tables not created | `docker exec -i postgres psql -U pgadmin -d pipeline_db < scripts/init_db.sql` |
-| `FATAL: database "airflow_db" does not exist` | Airflow DB missing after volume reset | `docker exec -it postgres psql -U pgadmin -d postgres -c "CREATE DATABASE airflow_db;"` |
+| `relation "file_registry" does not exist` | DB tables not created | `docker exec -i postgres psql -U ${POSTGRES_USER} -d pipeline_db < scripts/init_db.sql` |
+| `FATAL: database "airflow_db" does not exist` | Airflow DB missing after volume reset | `docker exec -it postgres psql -U ${POSTGRES_USER} -d postgres -c "CREATE DATABASE airflow_db;"` |
 | `ModuleNotFoundError: No module named 'psycopg2'` | Wrong venv active | `source /Users/bhuwanmadhikarmi/datadissect/.venv/bin/activate` |
 | DAG stuck in paused state | DAG is paused | Unpause via UI or `curl -X PATCH .../dags/claims_pipeline -d '{"is_paused": false}'` |
 | DAG triggered but no tasks run | DAG still paused, or scheduler not running | Check `docker ps` for `airflow-scheduler`; check `curl http://localhost:8082/health` |
