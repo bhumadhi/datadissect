@@ -1,5 +1,9 @@
 # DataDissect
 
+> **Azure port:** [github.com/bhumadhi/datadissect-azure](https://github.com/bhumadhi/datadissect-azure)
+> — this architecture rebuilt on Azure Databricks with Terraform: ADLS Gen2,
+> managed identity, Unity Catalog, and OIDC CI/CD.
+
 A healthcare claims data platform built end to end on open-source tooling — to work
 through every layer of a modern lakehouse without a managed platform abstracting it away.
 

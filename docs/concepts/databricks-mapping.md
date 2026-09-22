@@ -1,5 +1,11 @@
 # Databricks Mapping — Local Stack to Databricks
 
+> **Built for real:** the Azure half of this mapping now exists as working code —
+> [github.com/bhumadhi/datadissect-azure](https://github.com/bhumadhi/datadissect-azure).
+> ADLS Gen2, managed identity, Unity Catalog and the claims pipeline, provisioned
+> in Terraform. The corrections below (ABFS vs S3A especially) come from building
+> it rather than reading about it.
+
 ## The core point
 
 DataDissect is built on open-source tools so every layer is visible and understandable without abstraction. Databricks is a managed platform that runs the same underlying technologies — Delta Lake, Apache Spark, the Medallion architecture — but handles infrastructure, optimization, and governance for you.
@@ -12,7 +18,7 @@ DataDissect is built on open-source tools so every layer is visible and understa
 
 | DataDissect (local) | Databricks equivalent | What changes |
 |---|---|---|
-| MinIO (object store) | S3 / ADLS Gen2 / GCS (external storage) | Same S3A connector, real cloud object store |
+| MinIO (object store) | S3 / ADLS Gen2 / GCS (external storage) | **Different driver per cloud** — `s3a://` for S3, `abfss://` for ADLS Gen2 |
 | Apache Spark `local[*]` | Databricks Runtime (managed Spark) | Databricks adds Photon engine, cluster auto-scaling |
 | Delta Lake 3.0.0 | Delta Lake (built-in) | Same format — Databricks invented Delta Lake |
 | Airflow DAG | Databricks Workflows / Jobs | Declarative JSON job definitions, native Spark integration |
@@ -31,13 +37,25 @@ DataDissect is built on open-source tools so every layer is visible and understa
 
 ## Component Deep Dives
 
-### MinIO → External Storage (S3/ADLS/GCS)
+### MinIO → External Storage (S3 / ADLS Gen2 / GCS)
 
-**Local:** MinIO runs in Docker, Spark connects via S3A with `path.style.access=true` and explicit endpoint config.
+**Local:** MinIO runs in Docker. Spark connects via the S3A connector (`hadoop-aws`) with `path.style.access=true` and an explicit endpoint.
 
-**Databricks:** Spark connects to real S3/ADLS/GCS. Credentials managed via instance profiles (AWS) or service principals (Azure) — not in code. The `s3a://` path works identically. Path style access and endpoint config are handled by the platform.
+**On Azure, it is not S3A.** ADLS Gen2 uses the **ABFS** driver (`hadoop-azure`), and paths look like:
 
-**Interview:** *"Locally I configure the S3A connector manually — endpoint, access key, path style access. On Databricks, the cluster's instance profile handles auth — same connector, zero config."*
+```
+abfss://<container>@<account>.dfs.core.windows.net/<path>
+```
+
+`s3a://` is S3 only. These are two different implementations of the Hadoop FileSystem API, not aliases for each other. Pointing `s3a://` at an ADLS Gen2 account does not work.
+
+Two details that matter in practice:
+
+- **`dfs` vs `blob` endpoint.** A storage account with hierarchical namespace enabled exposes *both* `…dfs.core.windows.net` (filesystem API: real directories, atomic rename) and `…blob.core.windows.net` (flat object API) over the same bytes. ABFS talks to `dfs`. Without hierarchical namespace you only get the flat one, and renaming a directory becomes a copy of every object — which is why Spark's commit protocol is slow and non-atomic on flat blob storage.
+
+- **No key in the code.** The cluster authenticates with a managed identity; Unity Catalog holds a *storage credential* wrapping that identity and an *external location* binding it to a path. Access is a `GRANT`, not a secret.
+
+**Interview:** *"Locally I configure S3A by hand — endpoint, access key, path-style access. On Azure it's a different driver entirely: ABFS, `abfss://`, against the dfs endpoint. And there's no key anywhere — the cluster's managed identity gets a token from the platform and Unity Catalog checks the grant on the external location."*
 
 ---
 
